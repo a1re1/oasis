@@ -23,6 +23,9 @@ pub struct Config {
     pub default_top_k: usize,
     /// Skip dense indexing entirely (BM25 only). Useful for tests / no-network.
     pub lexical_only: bool,
+    /// Directory for the on-disk embedding cache. `None` = `$OASIS_CACHE_DIR`
+    /// or the platform cache dir.
+    pub cache_dir: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -35,6 +38,7 @@ impl Default for Config {
             chunk_overlap: 32,
             default_top_k: 8,
             lexical_only: false,
+            cache_dir: None,
         }
     }
 }
