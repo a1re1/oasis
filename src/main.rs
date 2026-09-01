@@ -4,10 +4,20 @@ use clap::{Parser, Subcommand};
 use oasis::config::Config;
 
 #[derive(Parser)]
-#[command(name = "oasis", version, about = "Hybrid (dense + BM25) search over your markdown corpus. Use --json for machine consumption.")]
+#[command(
+    name = "oasis",
+    version,
+    about = "Hybrid (dense + BM25) search over your markdown corpus. Use --json for machine consumption."
+)]
 struct Cli {
     /// Directories to ingest. Repeatable. Defaults to $OASIS_ROOTS (colon-separated).
-    #[arg(short, long = "root", env = "OASIS_ROOTS", value_delimiter = ':', global = true)]
+    #[arg(
+        short,
+        long = "root",
+        env = "OASIS_ROOTS",
+        value_delimiter = ':',
+        global = true
+    )]
     roots: Vec<PathBuf>,
 
     /// HF repo id of the ONNX embedding model.
@@ -21,6 +31,10 @@ struct Cli {
     /// Disable dense (ONNX) search; BM25 only.
     #[arg(long, global = true)]
     lexical_only: bool,
+
+    /// Directory for the on-disk embedding cache (default: platform cache dir).
+    #[arg(long, env = "OASIS_CACHE_DIR", global = true)]
+    cache_dir: Option<PathBuf>,
 
     #[command(subcommand)]
     cmd: Cmd,
@@ -52,7 +66,10 @@ enum Cmd {
 
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env().add_directive("oasis=info".parse()?))
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("oasis=info")),
+        )
         .with_writer(std::io::stderr)
         .init();
 
@@ -62,9 +79,13 @@ fn main() -> anyhow::Result<()> {
         model_repo: cli.model,
         model_dir: cli.model_dir,
         lexical_only: cli.lexical_only,
+        cache_dir: cli.cache_dir,
         ..Config::default()
     };
-    anyhow::ensure!(!cfg.roots.is_empty(), "no roots given: pass --root <dir> or set OASIS_ROOTS");
+    anyhow::ensure!(
+        !cfg.roots.is_empty(),
+        "no roots given: pass --root <dir> or set OASIS_ROOTS"
+    );
 
     match cli.cmd {
         Cmd::Index => {
@@ -78,20 +99,35 @@ fn main() -> anyhow::Result<()> {
                 println!("{}", serde_json::to_string_pretty(&hits)?);
             } else {
                 for (i, h) in hits.iter().enumerate() {
-                    println!("{:>2}. [{:.4}] {}:{}-{}  {}", i + 1, h.score, h.path, h.line_start, h.line_end, h.heading_path.join(" > "));
+                    println!(
+                        "{:>2}. [{:.4}] {}:{}-{}  {}",
+                        i + 1,
+                        h.score,
+                        h.path,
+                        h.line_start,
+                        h.line_end,
+                        h.heading_path.join(" > ")
+                    );
                     println!("    {}", h.snippet.lines().next().unwrap_or(""));
                 }
             }
         }
         Cmd::Show { chunk, path } => {
-            let engine = oasis::engine::Engine::build(Config { lexical_only: true, ..cfg })?;
+            let engine = oasis::engine::Engine::build(Config {
+                lexical_only: true,
+                ..cfg
+            })?;
             match (chunk, path) {
                 (Some(id), _) => {
-                    let c = engine.get_chunk(id).ok_or_else(|| anyhow::anyhow!("no chunk {id}"))?;
+                    let c = engine
+                        .get_chunk(id)
+                        .ok_or_else(|| anyhow::anyhow!("no chunk {id}"))?;
                     println!("{}", serde_json::to_string_pretty(c)?);
                 }
                 (None, Some(p)) => {
-                    let doc = engine.get_document(&p).ok_or_else(|| anyhow::anyhow!("no document {}", p.display()))?;
+                    let doc = engine
+                        .get_document(&p)
+                        .ok_or_else(|| anyhow::anyhow!("no document {}", p.display()))?;
                     println!("{doc}");
                 }
                 (None, None) => anyhow::bail!("pass --chunk <id> or --path <file>"),

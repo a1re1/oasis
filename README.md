@@ -23,8 +23,9 @@ oasis --root ~/notes --lexical-only search "..."         # BM25 only, no model
 
 `OASIS_ROOTS` (colon-separated) replaces `--root`. `OASIS_MODEL_DIR` points at a
 local `model.onnx` + `tokenizer.json`; otherwise the model is fetched from the
-Hugging Face hub on first use. The embedding cache lives in `$OASIS_CACHE_DIR`
-or `~/.cache/oasis/`.
+Hugging Face hub on first use. The embedding cache lives in `--cache-dir` /
+`$OASIS_CACHE_DIR`, defaulting to the platform cache dir (`~/Library/Caches/oasis`
+on macOS, `~/.cache/oasis` on Linux). `RUST_LOG=warn` silences the timing logs.
 
 ## Layout
 
