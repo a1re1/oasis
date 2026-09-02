@@ -36,6 +36,23 @@ struct Cli {
     #[arg(long, env = "OASIS_CACHE_DIR", global = true)]
     cache_dir: Option<PathBuf>,
 
+    /// Glob patterns for files to exclude from indexing (path relative to the
+    /// root, e.g. "index.md", "log/**"). Repeatable; also $OASIS_IGNORE
+    /// (colon-separated).
+    #[arg(
+        long = "ignore",
+        value_name = "GLOB",
+        env = "OASIS_IGNORE",
+        value_delimiter = ':',
+        global = true
+    )]
+    ignore: Vec<String>,
+
+    /// Maximum hits per document path in search results
+    /// (1 = one hit per document, 0 = every matching chunk).
+    #[arg(long, value_name = "N", default_value_t = 1, global = true)]
+    per_page: usize,
+
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -80,6 +97,8 @@ fn main() -> anyhow::Result<()> {
         model_dir: cli.model_dir,
         lexical_only: cli.lexical_only,
         cache_dir: cli.cache_dir,
+        ignore: cli.ignore,
+        per_page: cli.per_page,
         ..Config::default()
     };
     anyhow::ensure!(

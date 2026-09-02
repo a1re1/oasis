@@ -7,10 +7,15 @@
 //!   [`crate::cache::EmbeddingCache`] so only new/changed chunks hit the model.
 //!   Logs timing per phase.
 //! - `search(query, k)` runs BM25 (top `4*k`) and dense (top `4*k`), fuses
-//!   with [`crate::hybrid::fuse`], applies the phrase bonus, and returns
-//!   `SearchHit`s with a `snippet` (first ~400 chars of the chunk).
+//!   with [`crate::hybrid::fuse`], applies the phrase bonus, then collapses
+//!   the fused list by document path (`cfg.per_page`: 1 = best chunk per
+//!   document, 0 = chunk-level output, N = up to N chunks per document),
+//!   stopping at `k` distinct paths. Each `SearchHit` carries
+//!   `chunks_matched` (how many chunks of that path were in the fused
+//!   candidate list) and a `snippet` (first ~400 chars of the chunk).
 //! - `get_chunk(id)` / `get_document(path)` return full text for follow-up.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::time::Instant;
 
@@ -20,7 +25,7 @@ use crate::{
     config::Config,
     corpus::{self, Chunk},
     embed::Embedder,
-    hybrid::{self, PHRASE_BONUS, Weights},
+    hybrid::{self, Fused, PHRASE_BONUS, Weights},
     vector::VectorIndex,
 };
 
@@ -35,6 +40,8 @@ pub struct SearchHit {
     pub line_end: usize,
     pub score: f32,
     pub snippet: String,
+    /// How many chunks of `path` were in the fused candidate list.
+    pub chunks_matched: usize,
 }
 
 pub struct Engine {
@@ -134,14 +141,22 @@ impl Engine {
                 .total_cmp(&a.score)
                 .then(a.chunk_id.cmp(&b.chunk_id))
         });
-        fused.truncate(k);
+        // How many chunks of each document made it into the fused candidate
+        // list (reported per hit as `chunks_matched`).
+        let mut matched: HashMap<&Path, usize> = HashMap::with_capacity(fused.len());
+        for f in &fused {
+            *matched
+                .entry(self.chunks[f.chunk_id].path.as_path())
+                .or_insert(0) += 1;
+        }
+        let selected = select_per_path(&fused, &self.chunks, k, self.cfg.per_page);
         tracing::info!(
             lexical = lexical.len(),
             dense = dense.len(),
             ms = t.elapsed().as_millis(),
             "searched"
         );
-        Ok(fused
+        Ok(selected
             .into_iter()
             .map(|f| {
                 let c = &self.chunks[f.chunk_id];
@@ -153,6 +168,7 @@ impl Engine {
                     line_end: c.line_end,
                     score: f.score,
                     snippet: snippet(&c.text),
+                    chunks_matched: matched.get(c.path.as_path()).copied().unwrap_or(0),
                 }
             })
             .collect())
@@ -197,6 +213,41 @@ fn snippet(text: &str) -> String {
     }
 }
 
+/// Collapse fused candidates by document path.
+///
+/// `per_page == 0` disables collapsing: the first `k` fused chunks come back
+/// (today's chunk-level output). Otherwise keep the best-ranked chunk(s) per
+/// path, in fused order — up to `per_page` chunks per path — and stop once
+/// `k` distinct paths have been selected.
+fn select_per_path<'a>(
+    fused: &'a [Fused],
+    chunks: &[Chunk],
+    k: usize,
+    per_page: usize,
+) -> Vec<&'a Fused> {
+    if per_page == 0 {
+        return fused.iter().take(k).collect();
+    }
+    let mut kept: HashMap<&Path, usize> = HashMap::new();
+    let mut out: Vec<&Fused> = Vec::new();
+    let mut unique = 0usize;
+    for f in fused {
+        let path = chunks[f.chunk_id].path.as_path();
+        let seen = kept.get(path).copied().unwrap_or(0);
+        if seen == 0 {
+            if unique == k {
+                break; // already have k distinct documents
+            }
+            unique += 1;
+        }
+        if seen < per_page {
+            kept.insert(path, seen + 1);
+            out.push(f);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,5 +259,55 @@ mod tests {
         assert_eq!(out.chars().count(), SNIPPET_CHARS + 1);
         assert!(out.ends_with('…'));
         assert_eq!(snippet("short"), "short");
+    }
+
+    fn two_doc_engine() -> (tempfile::TempDir, Engine) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // a.md chunks into three sections, all mentioning "alpha".
+        std::fs::write(
+            tmp.path().join("a.md"),
+            "# One\nalpha tide\n\n## Two\nalpha tide\n\n### Three\nalpha tide\n",
+        )
+        .expect("write a.md");
+        std::fs::write(tmp.path().join("b.md"), "# Bee\nalpha ridge\n").expect("write b.md");
+        let cfg = Config {
+            roots: vec![tmp.path().to_path_buf()],
+            lexical_only: true,
+            ..Config::default()
+        };
+        let engine = Engine::build(cfg).expect("build engine");
+        (tmp, engine)
+    }
+
+    #[test]
+    fn search_collapses_by_path_and_counts_chunks_matched() {
+        let (_tmp, mut eng) = two_doc_engine();
+        let hits = eng.search("alpha", 2).expect("search");
+        assert_eq!(hits.len(), 2, "got {hits:?}");
+        let paths: std::collections::HashSet<&str> =
+            hits.iter().map(|h| h.path.as_str()).collect();
+        assert_eq!(paths.len(), 2, "expected distinct paths, got {paths:?}");
+        let a_hit = hits
+            .iter()
+            .find(|h| h.path.ends_with("a.md"))
+            .expect("a.md hit");
+        assert_eq!(a_hit.chunks_matched, 3, "all three a.md chunks were candidates");
+        let b_hit = hits
+            .iter()
+            .find(|h| h.path.ends_with("b.md"))
+            .expect("b.md hit");
+        assert_eq!(b_hit.chunks_matched, 1);
+    }
+
+    #[test]
+    fn per_page_zero_keeps_chunk_level_output() {
+        let (_tmp, mut eng) = two_doc_engine();
+        eng.cfg.per_page = 0;
+        let hits = eng.search("alpha", 4).expect("search");
+        assert_eq!(hits.len(), 4, "no collapsing at per_page 0, got {hits:?}");
+        let a_hits: Vec<&SearchHit> =
+            hits.iter().filter(|h| h.path.ends_with("a.md")).collect();
+        assert_eq!(a_hits.len(), 3);
+        assert!(a_hits.iter().all(|h| h.chunks_matched == 3));
     }
 }
