@@ -115,16 +115,7 @@ impl Engine {
         if query.is_empty() || k == 0 {
             return Ok(Vec::new());
         }
-        // Candidate pool. With per-document collapsing, many fused chunks
-        // belong to the same page, so the pool must be well above k or the
-        // k-th distinct document is never reached (o-cs eval: 4k lost ~1.5
-        // points of recall@3 versus a 16k pool). per_page == 0 keeps the
-        // historical 4k pool so chunk-level output is unchanged.
-        let pool = if self.cfg.per_page == 0 {
-            k.saturating_mul(4).max(1)
-        } else {
-            k.saturating_mul(16).max(64)
-        };
+        let pool = k.saturating_mul(4).max(1);
         let t = Instant::now();
         let lexical = self.bm25.search(query, pool);
         let dense = match self.embedder.as_mut() {
