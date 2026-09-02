@@ -12,6 +12,7 @@
 
 use std::path::{Path, PathBuf};
 
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use tracing::warn;
 
 use crate::config::Config;
@@ -45,6 +46,7 @@ impl Chunk {
 
 /// Walk `roots` and return all chunks. Files that fail to read are logged and skipped.
 pub fn load(roots: &[PathBuf], cfg: &Config) -> anyhow::Result<Vec<Chunk>> {
+    let ignore = compile_ignore(&cfg.ignore);
     let mut files: Vec<(PathBuf, PathBuf)> = Vec::new(); // (root, file path)
     for root in roots {
         let root = root.clone();
@@ -59,6 +61,11 @@ pub fn load(roots: &[PathBuf], cfg: &Config) -> anyhow::Result<Vec<Chunk>> {
                     continue;
                 }
             };
+            // Ignore globs are matched against the path relative to the root;
+            // directories are checked too so `log/**`-style rules prune whole trees.
+            if entry.depth() > 0 && ignore.is_match(entry.path().strip_prefix(&root).unwrap_or(entry.path())) {
+                continue;
+            }
             if !entry.file_type().is_file() {
                 continue;
             }
@@ -94,6 +101,21 @@ pub fn load(roots: &[PathBuf], cfg: &Config) -> anyhow::Result<Vec<Chunk>> {
 fn is_skipped_name(name: &std::ffi::OsStr) -> bool {
     let name = name.to_string_lossy();
     name == "node_modules" || name == "target" || name.starts_with('.')
+}
+
+/// Compile `cfg.ignore` globs (matched against paths relative to the root).
+/// Invalid patterns are logged and skipped rather than failing the whole walk.
+fn compile_ignore(patterns: &[String]) -> GlobSet {
+    let mut builder = GlobSetBuilder::new();
+    for pat in patterns {
+        match Glob::new(pat) {
+            Ok(glob) => {
+                builder.add(glob);
+            }
+            Err(err) => warn!("skipping invalid --ignore glob {pat:?}: {err}"),
+        }
+    }
+    builder.build().unwrap_or_else(|_| GlobSet::empty())
 }
 
 struct RawSection {
@@ -457,6 +479,30 @@ mod tests {
         assert_eq!(chunks[0].id, 0);
         assert_eq!(chunks[1].id, 1);
         assert_eq!(chunks[0].root, root);
+    }
+
+    #[test]
+    fn load_skips_ignored_globs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("a")).unwrap();
+        std::fs::write(root.join("index.md"), "# Index\nindex text\n").unwrap();
+        std::fs::write(root.join("a/b.md"), "# B\nb text\n").unwrap();
+
+        let cfg = Config {
+            ignore: vec!["index.md".to_string()],
+            ..Config::default()
+        };
+        let chunks = load(&[root.to_path_buf()], &cfg).unwrap();
+        let paths: Vec<String> = chunks
+            .iter()
+            .map(|c| c.path.to_string_lossy().into())
+            .collect();
+        assert_eq!(paths, vec!["a/b.md"]);
+
+        // No ignore patterns -> both files are chunked as before.
+        let chunks = load(&[root.to_path_buf()], &Config::default()).unwrap();
+        assert_eq!(chunks.len(), 2);
     }
 
     #[test]

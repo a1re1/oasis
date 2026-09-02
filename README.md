@@ -19,6 +19,8 @@ oasis --root ~/notes search "graceful shutdown tokio" --json -k 5
 oasis --root ~/notes show --chunk 42                     # full chunk by id
 oasis --root ~/notes show --path rust/tokio.md           # whole document
 oasis --root ~/notes --lexical-only search "..."         # BM25 only, no model
+oasis --root ~/notes --ignore index.md --ignore 'log/**' search "..."
+oasis --root ~/notes --per-page 0 search "..."            # raw chunk-level hits
 ```
 
 `OASIS_ROOTS` (colon-separated) replaces `--root`. `OASIS_MODEL_DIR` points at a
@@ -26,6 +28,18 @@ local `model.onnx` + `tokenizer.json`; otherwise the model is fetched from the
 Hugging Face hub on first use. The embedding cache lives in `--cache-dir` /
 `$OASIS_CACHE_DIR`, defaulting to the platform cache dir (`~/Library/Caches/oasis`
 on macOS, `~/.cache/oasis` on Linux). `RUST_LOG=warn` silences the timing logs.
+
+### Result quality flags
+
+- `--ignore <GLOB>` (repeatable, or `$OASIS_IGNORE` colon-separated) skips files
+  whose path relative to the root matches a glob, both when indexing and when
+  walking. Use it to drop generated pages like `index.md` or `log/**` from
+  results entirely.
+- `--per-page <N>` caps how many hits `search` returns per document path
+  (default `1`: a document appears once, via its best-ranked chunk — different
+  chunks of the same page no longer fill several top-k slots). `--per-page 0`
+  means unlimited and reproduces the raw chunk-level output. `search --json`
+  reports `chunks_matched`, how many chunks of that document were candidates.
 
 ## Layout
 

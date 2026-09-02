@@ -26,6 +26,14 @@ pub struct Config {
     /// Directory for the on-disk embedding cache. `None` = `$OASIS_CACHE_DIR`
     /// or the platform cache dir.
     pub cache_dir: Option<PathBuf>,
+    /// Glob patterns (matched against each file's path relative to the root)
+    /// for files to exclude from indexing entirely. Examples: `index.md`,
+    /// `log/**`, `**/drafts/*.md`. Empty = index everything.
+    pub ignore: Vec<String>,
+    /// Maximum hits returned per document path from `search`.
+    /// 1 collapses all chunks of a document to its best-ranked chunk;
+    /// 0 = unlimited (chunk-level output).
+    pub per_page: usize,
 }
 
 impl Default for Config {
@@ -39,6 +47,8 @@ impl Default for Config {
             default_top_k: 8,
             lexical_only: false,
             cache_dir: None,
+            ignore: Vec::new(),
+            per_page: 1,
         }
     }
 }

@@ -22,6 +22,7 @@ serde_json = "1.0"
 # Corpus ingestion
 walkdir = "2.5"
 pulldown-cmark = "0.13"
+globset = "0.4"
 
 # Lexical search
 unicode-segmentation = "1.13"
